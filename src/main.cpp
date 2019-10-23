@@ -1,5 +1,5 @@
 #if !(defined(ESP_NAME))
-  #define ESP_NAME "trigger" 
+  #define ESP_NAME "sensor" 
 #endif
 
 #if !(defined(DISPLAY_128X32) || defined(DISPLAY_128X64))
@@ -86,19 +86,10 @@ IPAddress qLabIp;
 unsigned int qLabPort;
 const char* qLabMessage = QLAB_MESSAGE;
 
+unsigned int sendQLabOSCMessageCount = 0;
+
 void sendQLabOSCMessage(const char* address) {
   OSCMessage msg(address);
-  Udp.beginPacket(qLabIp, qLabPort);
-  msg.send(Udp);
-  Udp.endPacket();
-  msg.empty();
-
-  // Send message three times to ensure delivery.  Need to come up with a better approach.
-  Udp.beginPacket(qLabIp, qLabPort);
-  msg.send(Udp);
-  Udp.endPacket();
-  msg.empty();
-
   Udp.beginPacket(qLabIp, qLabPort);
   msg.send(Udp);
   Udp.endPacket();
@@ -155,6 +146,7 @@ void setup()
   /* OTA */
   ArduinoOTA.setHostname(hostname);
   ArduinoOTA.onStart([]() {
+    oled.ssd1306WriteCmd(SSD1306_DISPLAYON);
     String type;
     if (ArduinoOTA.getCommand() == U_FLASH) {
       type = "sketch";
@@ -227,27 +219,14 @@ void setup()
 #endif
   sensor.startContinuous();
 
-  // Calibrate
-  oled.print(F("Calibrating...\r"));
-  delay(1000);
-  int calibrateCount = 0;
-  int range = 0;
-  while((range = sensor.readRangeContinuousMillimeters()) > 1200) {
-    oled.printf("Calibrate: %u\r", calibrateCount);
-    ArduinoOTA.handle();
-    delay(100);
-    calibrateCount++;
-  }
   oled.println(F("---------------------"));
-  maxRange = range;
-  minRange = range;
 
   /* LED */
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH);
 
+  oled.setContrast(0);
   oled.ssd1306WriteCmd(SSD1306_DISPLAYOFF);
-  //oled.setContrast(0);
 }
 
 void loop()
@@ -260,41 +239,44 @@ void loop()
   nextRun = millis() + RUN_INTERVAL;
 
   int range = sensor.readRangeContinuousMillimeters();
-  if (sensor.timeoutOccurred()) { 
-    return;
+  if (!sensor.timeoutOccurred()) { 
+    // Filter Noise
+    //samples.add(range);
+    //range = samples.getMedian();
+
+    // Detect if tripped
+    if ((range < (maxRange - 100)) && !tripped) {
+      sendQLabOSCMessageCount = 10; // Trigger sending
+      digitalWrite(LED_BUILTIN, LOW);
+      tripped = true;
+      oled.ssd1306WriteCmd(SSD1306_DISPLAYON);
+      minRange = range; // Reset minimum range
+      count++;
+    } 
+    else if (range > (minRange + 100) && tripped) {
+      digitalWrite(LED_BUILTIN, HIGH);
+      tripped = false;
+      oled.ssd1306WriteCmd(SSD1306_DISPLAYOFF);
+      maxRange = range; // Reset max range
+    }
+    else if (range > maxRange) {
+      maxRange = range;
+    } else if (range < minRange) {
+      minRange = range;
+    }
+
+    // Ensure max range does not go above maximum allowed
+    if (maxRange > MAX_RANGE) {
+      maxRange = MAX_RANGE;
+    }
+
+    oled.printf("%4d %4d %4d %6d\r", minRange, range, maxRange, count);
+    //oled.invertDisplay(tripped);
   }
 
-  // Filter Noise
-  //samples.add(range);
-  //range = samples.getMedian();
-
-  // Detect if tripped
-  if ((range < (maxRange - 100)) && !tripped) {
+  if (sendQLabOSCMessageCount > 0) {
+    sendQLabOSCMessageCount--;
     sendQLabOSCMessage(QLAB_MESSAGE);
-    digitalWrite(LED_BUILTIN, LOW);
-    tripped = true;
-    oled.ssd1306WriteCmd(SSD1306_DISPLAYON);
-    minRange = range; // Reset minimum range
-    count++;
-  } 
-  else if (range > (minRange + 100) && tripped) {
-    digitalWrite(LED_BUILTIN, HIGH);
-    tripped = false;
-    oled.ssd1306WriteCmd(SSD1306_DISPLAYOFF);
-    maxRange = range; // Reset max range
   }
-  else if (range > maxRange) {
-    maxRange = range;
-  } else if (range < minRange) {
-    minRange = range;
-  }
-
-  // Ensure max range does not go above maximum allowed
-  if (maxRange > MAX_RANGE) {
-    maxRange = MAX_RANGE;
-  }
-
-  oled.printf("%4d %4d %4d %6d\r", minRange, range, maxRange, count);
-  //oled.invertDisplay(tripped);
 }
 
